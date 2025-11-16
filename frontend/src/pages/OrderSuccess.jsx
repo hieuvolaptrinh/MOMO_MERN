@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useLocation, Link } from 'react-router-dom';
 import { fetchOrderById } from '../services/orders';
+import { checkMoMoPaymentStatus, confirmMoMoPayment } from '../services/momo';
 
 function StatusBadge({ status }) {
   const statusConfig = {
@@ -14,7 +15,7 @@ function StatusBadge({ status }) {
     refunded: { text: 'Đã hoàn tiền', class: 'bg-gray-100 text-gray-700 border-gray-200' },
   };
   const config = statusConfig[status] || { text: status, class: 'bg-gray-100 text-gray-700 border-gray-200' };
-  
+
   return (
     <span className={`px-3 py-1.5 rounded-lg border text-sm font-semibold ${config.class}`}>
       {config.text}
@@ -25,8 +26,29 @@ function StatusBadge({ status }) {
 export default function OrderSuccess() {
   const loc = useLocation();
   const qs = new URLSearchParams(loc.search);
-  const id = qs.get('id');
+
+  // Lấy orderId từ nhiều nguồn: ưu tiên extraData (MoMo callback), sau đó id, cuối cùng orderId
+  let id = qs.get('id');
   const code = qs.get('code') || '';
+
+  // Ưu tiên parse từ extraData (MoMo callback) vì nó chứa MongoDB ID chính xác
+  const extraData = qs.get('extraData');
+  if (extraData) {
+    try {
+      const parsed = JSON.parse(decodeURIComponent(extraData));
+      if (parsed.orderId) {
+        id = parsed.orderId;
+      }
+    } catch (e) {
+      console.error('Error parsing extraData:', e);
+    }
+  }
+
+  // Nếu chưa có id, thử lấy từ orderId (nhưng có thể là order code, không phải MongoDB ID)
+  if (!id) {
+    id = qs.get('orderId');
+  }
+
   const [order, setOrder] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -34,13 +56,68 @@ export default function OrderSuccess() {
     (async () => {
       if (id) {
         setLoading(true);
-        try { 
-          setOrder(await fetchOrderById(id)); 
+        try {
+          const orderData = await fetchOrderById(id);
+          setOrder(orderData);
+
+          // Kiểm tra nếu có resultCode từ MoMo redirect (thanh toán thành công)
+          const resultCode = qs.get('resultCode');
+          const transId = qs.get('transId');
+          const amount = qs.get('amount');
+          const orderCode = qs.get('orderId'); // Order code từ MoMo
+          const isMoMoSuccess = resultCode === '0';
+
+          // Nếu có resultCode=0 (thanh toán thành công) và order chưa được đánh dấu đã thanh toán
+          if (orderData && orderData.paymentMethod === 'momo' && isMoMoSuccess && !orderData.paid) {
+            try {
+              console.log('💰 Confirming MoMo payment from frontend...');
+              // Xác nhận thanh toán từ frontend (callback có thể chưa kịp xử lý)
+              const confirmResult = await confirmMoMoPayment({
+                orderId: id,
+                resultCode: parseInt(resultCode),
+                transId,
+                amount: amount ? parseInt(amount) : orderData.total,
+                orderCode,
+              });
+
+              if (confirmResult.success && confirmResult.order) {
+                setOrder(confirmResult.order);
+                console.log('✅ Payment confirmed successfully');
+              }
+            } catch (confirmError) {
+              console.error('Error confirming MoMo payment:', confirmError);
+              // Nếu confirm thất bại, thử check status
+              try {
+                const statusResult = await checkMoMoPaymentStatus(id);
+                if (statusResult.paid) {
+                  const updatedOrder = await fetchOrderById(id);
+                  setOrder(updatedOrder);
+                }
+              } catch (statusError) {
+                console.error('Error checking MoMo payment status:', statusError);
+              }
+            }
+          } else if (orderData && orderData.paymentMethod === 'momo' && !orderData.paid && !isMoMoSuccess) {
+            // Nếu chưa thanh toán và không có resultCode=0, kiểm tra trạng thái
+            try {
+              const statusResult = await checkMoMoPaymentStatus(id);
+              if (statusResult.paid) {
+                const updatedOrder = await fetchOrderById(id);
+                setOrder(updatedOrder);
+              }
+            } catch (statusError) {
+              console.error('Error checking MoMo payment status:', statusError);
+            }
+          }
         } catch (error) {
           console.error('Error fetching order:', error);
+          // Nếu lỗi, vẫn dừng loading để hiển thị error message
         } finally {
           setLoading(false);
         }
+      } else {
+        // Nếu không có id, dừng loading
+        setLoading(false);
       }
     })();
   }, [id]);
@@ -78,8 +155,8 @@ export default function OrderSuccess() {
             Đơn hàng #{order?.code || code || order?._id?.slice(-8) || '—'}
           </h1>
           <p className="text-sm text-gray-600">
-            Đặt lúc: {order?.placedAt ? new Date(order.placedAt).toLocaleString('vi-VN') : 
-                      order?.createdAt ? new Date(order.createdAt).toLocaleString('vi-VN') : '—'}
+            Đặt lúc: {order?.placedAt ? new Date(order.placedAt).toLocaleString('vi-VN') :
+              order?.createdAt ? new Date(order.createdAt).toLocaleString('vi-VN') : '—'}
           </p>
         </div>
         <div className="flex items-center gap-4">
@@ -117,7 +194,7 @@ export default function OrderSuccess() {
               <div className="bg-gray-50 px-6 py-4 border-b border-gray-200">
                 <h2 className="text-lg font-semibold text-gray-900">Sản phẩm đã đặt</h2>
               </div>
-              
+
               <div className="p-6">
                 <div className="space-y-4">
                   {order.items.map((item, idx) => (
@@ -127,8 +204,8 @@ export default function OrderSuccess() {
                         <div className="flex-shrink-0">
                           <div className="w-24 h-24 bg-gray-100 rounded-lg overflow-hidden border border-gray-200">
                             {item.productId?.images?.[0]?.url ? (
-                              <img 
-                                src={item.productId.images[0].url} 
+                              <img
+                                src={item.productId.images[0].url}
                                 alt={item.productId.images[0].alt || item.name}
                                 className="w-full h-full object-cover"
                               />
@@ -143,7 +220,7 @@ export default function OrderSuccess() {
                         {/* Product Info */}
                         <div className="flex-1 min-w-0">
                           <h3 className="text-base font-semibold text-gray-900 mb-1 line-clamp-2">{item.name}</h3>
-                          
+
                           {/* Brand */}
                           {item.productId?.brand && (
                             <p className="text-sm text-gray-500 mb-2">{item.productId.brand}</p>
@@ -267,12 +344,12 @@ export default function OrderSuccess() {
               <div className="text-sm">
                 <p className="font-medium text-gray-900 mb-1">
                   {order?.paymentMethod === 'cod' ? 'Thanh toán khi nhận hàng (COD)' :
-                   order?.paymentMethod === 'bank' ? 'Chuyển khoản ngân hàng' :
-                   order?.paymentMethod === 'momo' ? 'Ví điện tử MoMo' :
-                   order?.paymentMethod === 'vnpay' ? 'VNPay' :
-                   order?.paymentMethod === 'qr' ? 'Thanh toán quét mã QR' :
-                   order?.paymentMethod === 'paypal' ? 'Thanh toán bằng PayPal' :
-                   order?.paymentMethod || 'COD'}
+                    order?.paymentMethod === 'bank' ? 'Chuyển khoản ngân hàng' :
+                      order?.paymentMethod === 'momo' ? 'Ví điện tử MoMo' :
+                        order?.paymentMethod === 'vnpay' ? 'VNPay' :
+                          order?.paymentMethod === 'qr' ? 'Thanh toán quét mã QR' :
+                            order?.paymentMethod === 'paypal' ? 'Thanh toán bằng PayPal' :
+                              order?.paymentMethod || 'COD'}
                 </p>
                 {order?.paid && (
                   <p className="text-green-600 font-medium mt-2">✓ Đã thanh toán</p>
@@ -297,14 +374,14 @@ export default function OrderSuccess() {
 
       {/* Action Buttons */}
       <div className="flex flex-col sm:flex-row gap-4 justify-center">
-        <Link 
-          to="/collection" 
+        <Link
+          to="/collection"
           className="px-6 py-3 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors text-center font-medium"
         >
           Tiếp tục mua sắm
         </Link>
-        <Link 
-          to="/orders" 
+        <Link
+          to="/orders"
           className="px-6 py-3 bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors text-center font-medium"
         >
           Xem tất cả đơn hàng

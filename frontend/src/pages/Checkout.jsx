@@ -4,6 +4,7 @@ import { createOrder } from '../services/orders';
 import cart from '../services/cart'; // yêu cầu: cart item có field productId
 import { useAuth } from '../context/AuthContext';
 import { applyCoupon } from '../services/coupons';
+import { createMoMoPayment } from '../services/momo';
 // Định dạng tiền
 const fmt = (n) => (Number(n || 0)).toLocaleString('vi-VN') + '₫';
 
@@ -73,6 +74,24 @@ export default function Checkout() {
     try {
       setSubmitting(true);
       const order = await createOrder(payload);
+      
+      // Nếu thanh toán bằng MoMo, tạo payment URL và redirect
+      if (paymentMethod === 'momo') {
+        try {
+          const paymentResult = await createMoMoPayment(order._id);
+          if (paymentResult.payUrl) {
+            // Redirect đến MoMo payment page
+            window.location.href = paymentResult.payUrl;
+            return; // Không clear cart vì chưa thanh toán thành công
+          }
+        } catch (momoError) {
+          console.error('MoMo payment error:', momoError);
+          setErr('Không thể tạo thanh toán MoMo. Vui lòng thử lại hoặc chọn phương thức khác.');
+          return;
+        }
+      }
+      
+      // COD hoặc các phương thức khác
       cart.clear();
       navigate(`/order-success?code=${encodeURIComponent(order.code)}&id=${order._id}`);
     } catch (e) {
@@ -207,6 +226,29 @@ export default function Checkout() {
                 <svg className="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
                 </svg>
+              </label>
+
+              {/* MoMo */}
+              <label className={`flex items-center gap-3 p-4 border-2 rounded-lg cursor-pointer transition-all ${
+                paymentMethod === 'momo' 
+                  ? 'border-gray-900 bg-gray-50' 
+                  : 'border-gray-200 hover:border-gray-300'
+              }`}>
+                <input
+                  type="radio"
+                  name="paymentMethod"
+                  value="momo"
+                  checked={paymentMethod === 'momo'}
+                  onChange={(e) => setPaymentMethod(e.target.value)}
+                  className="w-5 h-5 text-gray-900 focus:ring-gray-900"
+                />
+                <div className="flex-1">
+                  <div className="font-semibold text-gray-900">Thanh toán bằng MoMo</div>
+                  <div className="text-sm text-gray-600">Thanh toán nhanh chóng và an toàn qua ví MoMo</div>
+                </div>
+                <div className="w-12 h-12 bg-pink-500 rounded-lg flex items-center justify-center">
+                  <span className="text-white font-bold text-lg">MoMo</span>
+                </div>
               </label>
 
               {/* PayPal */}

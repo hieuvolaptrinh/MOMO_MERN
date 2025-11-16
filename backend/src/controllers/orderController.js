@@ -117,6 +117,8 @@ export const createOrder = async (req, res) => {
   await reduceStock(items);
 
   // ❗️KHÔNG dùng biến tên "order" trước khi gán — build doc riêng
+  const { paymentMethod = 'cod' } = req.body;
+  
   const doc = {
     code: genOrderCode(),
     userId: req.user?.sub || null,
@@ -128,7 +130,10 @@ export const createOrder = async (req, res) => {
     couponCode,
     shippingAddress,
     note,
+    paymentMethod,
     status: 'pending',
+    paid: paymentMethod === 'cod' ? false : false, // MoMo sẽ cập nhật sau khi thanh toán
+    placedAt: new Date(),
     timeline: [{ status: 'pending', note: 'Order created' }],
   };
 

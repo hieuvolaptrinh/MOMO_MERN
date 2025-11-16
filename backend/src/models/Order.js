@@ -43,6 +43,19 @@ const OrderSchema = new mongoose.Schema({
   },
   paid: { type: Boolean, default: false },
 
+  // MoMo payment info
+  momoRequestId: { type: String },
+  momoTransId: { type: String },
+  momoResponseTime: { type: Date },
+  paymentInfo: {
+    momo: {
+      transId: String,
+      payType: String,
+      responseTime: Date,
+      amount: Number,
+    }
+  },
+
   // log mốc thời gian
   placedAt: Date,
   confirmedAt: Date,

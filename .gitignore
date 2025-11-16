@@ -10,8 +10,8 @@ build/
 **/build/
 
 # Env
-.env
-.env.*
+# .env
+# .env.*
 frontend/.env
 backend/.env
 
